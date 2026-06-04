@@ -188,22 +188,27 @@ export default function CandleChart({ instrumentKey, sig, ltp }) {
     };
   }, [instrumentKey, sig?.entry, sig?.sl, sig?.target]);
 
-  // ── Fetch candle data ─────────────────────────────────────────────────────
+  // ── Fetch candle data — refresh every 10 min to pick up new completed candles
   useEffect(() => {
     if (!candleRef.current || !vwapRef.current || !instrumentKey) return;
 
-    fetch(`/api/chart/${encodeURIComponent(instrumentKey)}`)
-      .then(r => r.json())
-      .then(data => {
-        if (!candleRef.current) return;
-        const candles = data.candles || [];
-        if (!candles.length) return;
-        candleRef.current.setData(candles);
-        candleDataRef.current = candles;
-        if (data.vwap?.length) vwapRef.current.setData(data.vwap);
-        chartRef.current?.timeScale().fitContent();
-      })
-      .catch(() => {});
+    const fetchCandles = () =>
+      fetch(`/api/chart/${encodeURIComponent(instrumentKey)}`)
+        .then(r => r.json())
+        .then(data => {
+          if (!candleRef.current) return;
+          const candles = data.candles || [];
+          if (!candles.length) return;
+          candleRef.current.setData(candles);
+          candleDataRef.current = candles;
+          if (data.vwap?.length) vwapRef.current.setData(data.vwap);
+          chartRef.current?.timeScale().fitContent();
+        })
+        .catch(() => {});
+
+    fetchCandles();
+    const id = setInterval(fetchCandles, 10 * 60 * 1000);
+    return () => clearInterval(id);
   }, [instrumentKey]);
 
   // ── Live LTP — update forming candle ─────────────────────────────────────

@@ -5,11 +5,13 @@ Run: uvicorn server:app --reload --port 8000
 import csv
 import time
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -194,6 +196,28 @@ def _calc_atr(today_df, n=10):
     return float(tr.iloc[-n:].mean())
 
 
+def _avg_volume(df, n=20):
+    """20-bar average volume, excluding the current (last) bar."""
+    if "volume" not in df.columns or len(df) < 2:
+        return 0.0
+    vols = df["volume"].iloc[max(0, len(df) - n - 1):-1]
+    vols = vols[vols > 0]
+    return float(vols.mean()) if len(vols) > 0 else 0.0
+
+
+def _calc_vwap_sigma(today_df):
+    """Cumulative volume-weighted VWAP standard deviation (sigma) per bar in today's session."""
+    if len(today_df) < 3 or "volume" not in today_df.columns:
+        return None
+    tp        = (today_df["high"] + today_df["low"] + today_df["close"]) / 3
+    vol       = today_df["volume"].clip(lower=0)
+    cum_vol   = vol.cumsum().replace(0, np.nan)
+    vwap_cv   = (tp * vol).cumsum() / cum_vol
+    var_cv    = (tp ** 2 * vol).cumsum() / cum_vol - vwap_cv ** 2
+    sigma     = var_cv.clip(lower=0).apply(np.sqrt).fillna(0.0)
+    return sigma
+
+
 def _sig(pattern, ref_candle, entry_candle, extra=None):
     entry = entry_candle["close"]
     sl    = entry_candle["vwap"]
@@ -251,7 +275,8 @@ def _pattern_b(today_df):
 
 
 def _pattern_c(today_df):
-    """From below VWAP, initial cross above → retest near VWAP (within 1 ATR) → strong breakout (>1 ATR above VWAP)."""
+    """Breakout Retest — DISABLED: 13% WR, -₹5,045, 6/8 SL hits. Retest candles often fail, not bounce."""
+    return None
     if len(today_df) < 4: return None
     atr  = _calc_atr(today_df)
     last = today_df.iloc[-1]
@@ -277,8 +302,317 @@ def _pattern_c(today_df):
     return _sig("C", init_candle, last, {"retest_candles": n_retest, "atr": round(atr, 2)})
 
 
+def _pattern_eng(today_df):
+    """Bullish Engulfing at VWAP: red wick into VWAP, next green body engulfs red body, closes above VWAP. Vol ≥1.5×."""
+    if len(today_df) < 3:
+        return None
+    last = today_df.iloc[-1]   # engulfing candle
+    prev = today_df.iloc[-2]   # red dip candle
+
+    if last["close"] <= last["open"]:  return None  # must be green
+    if last["close"] <= last["vwap"]:  return None  # must close above VWAP
+    if prev["close"] >= prev["open"]:  return None  # prev must be red
+    if prev["low"]   >  prev["vwap"]:  return None  # prev wick must touch VWAP
+    if prev["open"]  <  prev["vwap"]:  return None  # prev must have opened above VWAP
+
+    # Engulfing condition: current body contains entire previous body
+    if last["open"]  > prev["close"]: return None
+    if last["close"] < prev["open"]:  return None
+
+    # Stock must have been above VWAP before the dip
+    if today_df.iloc[-3]["close"] <= today_df.iloc[-3]["vwap"]: return None
+
+    avg_vol = _avg_volume(today_df)
+    if avg_vol > 0 and today_df["volume"].iloc[-1] < 1.5 * avg_vol: return None
+
+    dip_pct = round((prev["vwap"] - prev["low"]) / prev["vwap"] * 100, 3)
+    return _sig("ENG", prev, last, {"dip_pct": dip_pct})
+
+
+def _pattern_ham(today_df):
+    """Hammer / Pin Bar at VWAP: lower wick ≥2× body pierces VWAP, closes above. Vol ≥ avg."""
+    if len(today_df) < 3:
+        return None
+    last = today_df.iloc[-1]
+
+    if last["close"] <= last["vwap"]: return None  # must close above VWAP
+
+    body       = abs(last["close"] - last["open"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    upper_wick = last["high"] - max(last["open"], last["close"])
+
+    if body < last["close"] * 0.0005: return None  # body must exist (not pure doji)
+    if lower_wick < 2.0 * body:       return None  # lower wick ≥ 2× body
+    if last["low"] > last["vwap"]:    return None  # wick must pierce VWAP
+    if upper_wick > body:             return None  # small upper wick (genuine hammer shape)
+
+    # Previous 2 candles must be above VWAP (stock was above before wick dip)
+    if today_df.iloc[-2]["close"] <= today_df.iloc[-2]["vwap"]: return None
+    if today_df.iloc[-3]["close"] <= today_df.iloc[-3]["vwap"]: return None
+
+    avg_vol = _avg_volume(today_df)
+    if avg_vol > 0 and today_df["volume"].iloc[-1] < avg_vol: return None
+
+    dip_pct = round(lower_wick / last["vwap"] * 100, 3)
+    return _sig("HAM", last, last, {"dip_pct": dip_pct})
+
+
+def _pattern_mar(today_df):
+    """Bullish Marubozu VWAP Reclaim: near-wickless candle opens below, closes well above VWAP. Vol ≥2×."""
+    if len(today_df) < 2:
+        return None
+    last = today_df.iloc[-1]
+
+    if last["close"] <= last["open"]: return None  # must be green
+    if last["open"]  >= last["vwap"]: return None  # open must be below VWAP
+    if last["close"] <= last["vwap"]: return None  # close must be above VWAP
+
+    # Close must be well above VWAP (≥0.2%)
+    if (last["close"] - last["vwap"]) / last["vwap"] < 0.002: return None
+
+    body       = last["close"] - last["open"]
+    upper_wick = last["high"]  - last["close"]
+    lower_wick = last["open"]  - last["low"]
+    if body <= 0: return None
+    if upper_wick > 0.25 * body: return None  # near-wickless
+    if lower_wick > 0.25 * body: return None
+
+    # Previous candle must be below VWAP (genuine crossover, not continuation)
+    if today_df.iloc[-2]["close"] >= today_df.iloc[-2]["vwap"]: return None
+
+    avg_vol = _avg_volume(today_df)
+    if avg_vol <= 0: return None  # volume data required
+    if today_df["volume"].iloc[-1] < 3.0 * avg_vol: return None  # raised from 2× to 3×
+
+    # Minimum risk 0.3% to avoid near-zero risk trades
+    test_entry = last["close"]
+    test_sl    = last["vwap"]
+    if (test_entry - test_sl) / test_entry < 0.003: return None
+
+    dip_pct = round((last["vwap"] - last["open"]) / last["vwap"] * 100, 3)
+    return _sig("MAR", today_df.iloc[-2], last, {"dip_pct": dip_pct})
+
+
+def _pattern_star(today_df):
+    """Morning Star at VWAP — DISABLED: fires too frequently (80 signals/day, 13% WR). Needs redesign."""
+    return None
+    if len(today_df) < 4:
+        return None
+    c3 = today_df.iloc[-1]  # green confirmation candle
+    c2 = today_df.iloc[-2]  # doji / spinning top at VWAP
+    c1 = today_df.iloc[-3]  # red candle near VWAP
+    c0 = today_df.iloc[-4]  # candle before star — must be above VWAP
+
+    if c3["close"] <= c3["open"]: return None  # c3 must be green
+    if c3["close"] <= c3["vwap"]: return None  # c3 must close above VWAP
+    if c1["close"] >= c1["open"]: return None  # c1 must be red
+
+    # c1 closes near VWAP (within 0.5%)
+    if abs(c1["close"] - c1["vwap"]) / c1["vwap"] > 0.005: return None
+
+    # c2 is a small-body indecision candle (≤50% of c1 body)
+    c1_body = abs(c1["open"] - c1["close"])
+    c2_body = abs(c2["open"] - c2["close"])
+    if c1_body <= 0: return None
+    if c2_body > 0.5 * c1_body: return None
+
+    # c2 midpoint within 0.5% of VWAP
+    if abs((c2["open"] + c2["close"]) / 2 - c2["vwap"]) / c2["vwap"] > 0.005: return None
+
+    # c3 must close above midpoint of c1 (confirmation strength)
+    if c3["close"] < (c1["open"] + c1["close"]) / 2: return None
+
+    # Stock was above VWAP before the star pattern (pullback, not breakout)
+    if c0["close"] <= c0["vwap"]: return None
+
+    # Expanding volume: c3 > c1
+    if "volume" in today_df.columns and c3["volume"] <= c1["volume"]: return None
+
+    return _sig("STAR", c1, c3, {})
+
+
+def _pattern_ham2s(today_df):
+    """Hammer at −2σ VWAP band — mean reversion BUY on range days only."""
+    if len(today_df) < 5:
+        return None
+    sigma = _calc_vwap_sigma(today_df)
+    if sigma is None:
+        return None
+
+    last     = today_df.iloc[-1]
+    vwap     = last["vwap"]
+    sig_val  = float(sigma.iloc[-1])
+    if sig_val <= 0:
+        return None
+
+    lower_2s = vwap - 2.0 * sig_val
+
+    # Range day filter: VWAP must be flat (moved <0.15% over last 5 bars)
+    vwap_slice = today_df["vwap"].iloc[-5:]
+    if (vwap_slice.max() - vwap_slice.min()) / vwap > 0.0015:
+        return None
+
+    if last["low"] > lower_2s:         return None  # wick must pierce −2σ
+
+    # EOD filter: no signals after 14:45 (market closes too soon for trade to resolve)
+    if last.name.strftime("%H:%M") > "14:45":
+        return None
+
+    body       = abs(last["close"] - last["open"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    upper_wick = last["high"] - max(last["open"], last["close"])
+
+    if body       < last["close"] * 0.0003: return None  # body must exist
+    if lower_wick < 2.0 * body:             return None  # long lower wick
+    if last["close"] < lower_2s:            return None  # must close above −2σ
+    if upper_wick > body:                   return None  # small upper wick
+
+    avg_vol = _avg_volume(today_df)
+    if avg_vol > 0 and last["volume"] < 1.5 * avg_vol:
+        return None
+
+    entry  = round(last["close"], 2)
+    sl     = round(last["low"] - 0.01, 2)
+    risk   = round(entry - sl, 2)
+    if risk <= 0 or risk / entry < 0.001:
+        return None
+    target  = round(entry + 3.0 * risk, 2)
+    dip_pct = round((vwap - last["low"]) / vwap * 100, 3)
+
+    return {
+        "pattern":    "HAM2S",
+        "touch_time": last.name.strftime("%H:%M"),
+        "touch_low":  round(last["low"],  2),
+        "touch_high": round(last["high"], 2),
+        "touch_vwap": round(lower_2s,     2),
+        "entry_time": last.name.strftime("%H:%M"),
+        "entry":      entry,
+        "sl":         sl,
+        "target":     target,
+        "risk":       risk,
+        "reward":     round(3.0 * risk, 2),
+        "dip_pct":    dip_pct,
+    }
+
+
+def _pattern_bw(today_df):
+    """Band Walk at +1σ — DISABLED: 32 signals/day, 3% WR, -₹6,253. Fires on every rising stock. Needs redesign."""
+    return None
+    if len(today_df) < 7:
+        return None
+    sigma = _calc_vwap_sigma(today_df)
+    if sigma is None:
+        return None
+
+    last     = today_df.iloc[-1]
+    vwap     = last["vwap"]
+    sig_val  = float(sigma.iloc[-1])
+    if sig_val <= 0:
+        return None
+
+    upper_1s = vwap + sig_val
+
+    # Trend day: VWAP must have risen ≥0.1% over last 6 bars
+    vwap_6ago = today_df["vwap"].iloc[-7]
+    if vwap < vwap_6ago * 1.001:
+        return None
+
+    # Band walk in progress: ≥2 of last 4 prior candles closed above +1σ
+    walk_count = 0
+    for i in range(-5, -1):
+        c   = today_df.iloc[i]
+        s_i = float(sigma.iloc[i])
+        if c["close"] > c["vwap"] + s_i:
+            walk_count += 1
+    if walk_count < 2:
+        return None
+
+    # Current candle: low touches +1σ, closes above +1σ
+    if last["low"]   > upper_1s: return None  # didn't touch +1σ
+    if last["close"] < upper_1s: return None  # closed below (breakdown)
+
+    body         = abs(last["close"] - last["open"])
+    lower_wick   = min(last["open"], last["close"]) - last["low"]
+    candle_range = last["high"] - last["low"]
+    is_hammer    = body > 0 and lower_wick >= 2.0 * body
+    is_doji      = candle_range > 0 and body <= 0.25 * candle_range
+    if not (is_hammer or is_doji):
+        return None
+
+    avg_vol = _avg_volume(today_df)
+    if avg_vol > 0 and last["volume"] < avg_vol:
+        return None
+
+    dip_pct = round((upper_1s - last["low"]) / upper_1s * 100, 3)
+    return _sig("BW", last, last, {"dip_pct": dip_pct})
+
+
+def _pattern_sqz(today_df):
+    """Squeeze Breakout — DISABLED: 0% WR, 21 signals, -₹22,424. Sigma squeeze too loose, not detecting real squeezes."""
+    return None
+    if len(today_df) < 8:
+        return None
+    sigma = _calc_vwap_sigma(today_df)
+    if sigma is None:
+        return None
+
+    last    = today_df.iloc[-1]
+    vwap    = last["vwap"]
+    sig_now = float(sigma.iloc[-1])
+    if sig_now <= 0:
+        return None
+
+    upper_1s = vwap + sig_now
+
+    # Breakout: current candle closes above +1σ and is green
+    if last["close"] <= upper_1s:        return None
+    if last["close"] <= last["open"]:    return None
+
+    # Look back 4-7 bars: find prior squeeze (bands contracting and tight)
+    lookback = min(7, len(today_df) - 1)
+    sig_prev = [float(sigma.iloc[-i]) for i in range(2, lookback + 2)]
+    if len(sig_prev) < 4:
+        return None
+
+    sig_min = min(sig_prev)
+
+    # Bands must have been tight during squeeze: min sigma < 0.4% of VWAP
+    if sig_min / vwap > 0.004:
+        return None
+    # Current expansion: sigma now ≥20% wider than squeeze minimum
+    if sig_now < sig_min * 1.2:
+        return None
+
+    # Coiling: ≥60% of lookback bars had close within ±1σ of VWAP
+    coil_count = 0
+    for i in range(-lookback - 1, -1):
+        c   = today_df.iloc[i]
+        s_i = float(sigma.iloc[i])
+        if abs(c["close"] - c["vwap"]) <= s_i:
+            coil_count += 1
+    if coil_count < int(lookback * 0.6):
+        return None
+
+    # Volume spike vs squeeze average
+    squeeze_vol_avg = today_df["volume"].iloc[-lookback - 1:-1].mean()
+    if squeeze_vol_avg > 0 and last["volume"] < 1.5 * squeeze_vol_avg:
+        return None
+
+    return _sig("SQZ", last, last, {"band_sigma": round(sig_now, 2)})
+
+
 def find_entry(today_df):
-    return _pattern_b(today_df) or _pattern_c(today_df)
+    return (
+        _pattern_b(today_df)     or
+        _pattern_c(today_df)     or
+        _pattern_eng(today_df)   or
+        _pattern_ham(today_df)   or
+        _pattern_mar(today_df)   or
+        _pattern_star(today_df)  or
+        _pattern_ham2s(today_df) or
+        _pattern_bw(today_df)    or
+        _pattern_sqz(today_df)
+    )
 
 
 def compute_confidence(r):
@@ -310,12 +644,13 @@ def _evaluate(row):
     return r
 
 
-def _run_scan():
+def _run_scan(merge=False):
     rows = [
         {"symbol": r.symbol, "instrument_key": r.instrument_key, "market_cap_cr": r.market_cap_cr}
         for r in _instruments_1000.itertuples(index=False)
     ]
     done = 0
+    new_results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(_evaluate, row): row["symbol"] for row in rows}
         for future in as_completed(futures):
@@ -323,12 +658,55 @@ def _run_scan():
             state["scan_progress"] = done
             res = future.result()
             if res:
+                new_results.append(res)
+
+    if merge:
+        # Keep all existing stocks; add new ones; upgrade watching→signal if pattern now fires
+        existing = {r["symbol"]: i for i, r in enumerate(state["results"])}
+        for res in new_results:
+            sym = res["symbol"]
+            if sym not in existing:
                 state["results"].append(res)
+                existing[sym] = len(state["results"]) - 1
+            else:
+                idx = existing[sym]
+                old = state["results"][idx]
+                if not old.get("entry_signal") and res.get("entry_signal"):
+                    state["results"][idx] = res  # upgrade to signal
+        state["scan_time"] = datetime.now(IST).strftime("%H:%M:%S")
+    else:
+        state["results"]   = new_results
+        state["scan_time"] = datetime.now(IST).strftime("%H:%M:%S")
+
     state["scanning"]       = False
-    state["last_sig_check"] = time.time()  # first re-check fires 10 min after scan ends
+    state["last_sig_check"] = time.time()
+
+
+def _auto_scan_loop():
+    """Runs every 10 minutes during market hours. Full chartink scan every cycle — new stocks added throughout the day."""
+    time.sleep(3)  # let uvicorn fully start
+    first = True
+    while True:
+        if _is_market_open() and not state["scanning"]:
+            state["scanning"]      = True
+            state["scan_progress"] = 0
+            state["scan_total"]    = len(_instruments_1000)
+            if first:
+                state["results"]      = []
+                state["alerted_syms"] = set()
+                first = False
+            _run_scan(merge=True)
+            print(f"[AUTO] Scan done at {state['scan_time']} — {len(state['results'])} stocks in watchlist")
+
+        time.sleep(600)  # 10 minutes
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def on_startup():
+    threading.Thread(target=_auto_scan_loop, daemon=True).start()
+
 
 @app.get("/api/status")
 def get_status():
@@ -358,10 +736,9 @@ async def start_scan():
     state["results"]       = []
     state["scan_progress"] = 0
     state["scan_total"]    = len(_instruments_1000)
-    state["scan_time"]     = datetime.now(IST).strftime("%H:%M:%S")
     state["alerted_syms"]  = set()
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run_scan)
+    loop.run_in_executor(None, _run_scan, False)  # manual = fresh scan
     return {"status": "started", "total": state["scan_total"]}
 
 

@@ -1,5 +1,5 @@
 """
-run.py — Start VWAP Scanner (backend + frontend) with one command.
+run.py — Start VWAP Scanner + Backtest Lab (backend + frontend) with one command.
 Usage:  python run.py
 """
 import subprocess
@@ -12,10 +12,14 @@ ROOT     = os.path.dirname(os.path.abspath(__file__))
 FRONTEND = os.path.join(ROOT, "frontend")
 NPM      = "npm.cmd" if os.name == "nt" else "npm"
 
-print("\n  ⚡  VWAP Scanner — starting up...\n")
+print("\n  ⚡  TejToro — starting up...\n")
 
-backend  = subprocess.Popen(
+scanner  = subprocess.Popen(
     [sys.executable, "-m", "uvicorn", "server:app", "--reload", "--port", "8000"],
+    cwd=ROOT,
+)
+backtest = subprocess.Popen(
+    [sys.executable, "-m", "uvicorn", "backtest_server:app", "--reload", "--port", "8002"],
     cwd=ROOT,
 )
 frontend = subprocess.Popen(
@@ -26,17 +30,21 @@ frontend = subprocess.Popen(
 time.sleep(4)
 webbrowser.open("http://localhost:5173")
 
-print("  ✅  Backend  → http://localhost:8000")
-print("  ✅  Frontend → http://localhost:5173")
-print("\n  Press Ctrl+C to stop both servers.\n")
+print("  ✅  Scanner backend   → http://localhost:8000")
+print("  ✅  Backtest backend  → http://localhost:8002")
+print("  ✅  Frontend          → http://localhost:5173")
+print("\n  Press Ctrl+C to stop all servers.\n")
 
 try:
-    backend.wait()
+    scanner.wait()
+    backtest.wait()
     frontend.wait()
 except KeyboardInterrupt:
     print("\n  Shutting down...")
-    backend.terminate()
+    scanner.terminate()
+    backtest.terminate()
     frontend.terminate()
-    backend.wait()
+    scanner.wait()
+    backtest.wait()
     frontend.wait()
     print("  Done.\n")

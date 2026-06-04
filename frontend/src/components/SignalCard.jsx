@@ -3,8 +3,72 @@ import CandleChart from './CandleChart.jsx';
 const TRADE_CAPITAL = 200_000;
 
 const PATTERN_META = {
-  B: { label: 'Pattern B', desc: 'VWAP Reclaim',    color: '#2563eb', bg: 'rgba(37,99,235,0.12)'  },
-  C: { label: 'Pattern C', desc: 'Breakout Retest', color: '#7c3aed', bg: 'rgba(124,58,237,0.12)' },
+  B:     { label: 'VWAP Reclaim',      color: '#60a5fa', bg: 'rgba(37,99,235,0.15)'   },
+  C:     { label: 'Breakout Retest',   color: '#a78bfa', bg: 'rgba(124,58,237,0.15)'  },
+  ENG:   { label: 'Bullish Engulfing', color: '#34d399', bg: 'rgba(5,150,105,0.15)'   },
+  HAM:   { label: 'Hammer / Pin Bar',  color: '#fbbf24', bg: 'rgba(217,119,6,0.15)'   },
+  MAR:   { label: 'Marubozu Reclaim',  color: '#f472b6', bg: 'rgba(219,39,119,0.15)'  },
+  STAR:  { label: 'Morning Star',      color: '#fb923c', bg: 'rgba(234,88,12,0.15)'   },
+  HAM2S: { label: 'Hammer −2σ Band',   color: '#fcd34d', bg: 'rgba(252,211,77,0.15)'  },
+  BW:    { label: 'Band Walk +1σ',     color: '#4ade80', bg: 'rgba(74,222,128,0.15)'  },
+  SQZ:   { label: 'Squeeze Breakout',  color: '#c084fc', bg: 'rgba(192,132,252,0.15)' },
+  FLAG:     { label: 'Bull Flag',        color: '#f59e0b', bg: 'rgba(245,158,11,0.15)'  },
+  TRI:      { label: 'Asc Triangle',    color: '#06b6d4', bg: 'rgba(6,182,212,0.15)'   },
+  DTRI:     { label: 'Desc Triangle',   color: '#f97316', bg: 'rgba(249,115,22,0.15)'  },
+  VCNB:     { label: 'VWAP Consol BRK', color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
+  OPEN_RCL: { label: 'Opening Reclaim', color: '#e879f9', bg: 'rgba(232,121,249,0.15)' },
+};
+
+// Pattern-specific meta line below the symbol
+const SIGNAL_META = {
+  B:     (sig) => `Dip from VWAP @ ${sig.touch_time} → entry @ ${sig.entry_time}`,
+  C:     (sig) => `Initial break @ ${sig.touch_time} → retest → entry @ ${sig.entry_time}`,
+  ENG:   (sig) => `Red dip @ ${sig.touch_time} → engulfing entry @ ${sig.entry_time}`,
+  HAM:   (sig) => `Hammer formed @ ${sig.touch_time}`,
+  MAR:   (sig) => `Marubozu reclaim → entry @ ${sig.entry_time}`,
+  STAR:  (sig) => `Morning star @ ${sig.touch_time} → entry @ ${sig.entry_time}`,
+  HAM2S: (sig) => `Hammer at −2σ band @ ${sig.touch_time} · range day mean reversion`,
+  BW:    (sig) => `Band walk pullback to +1σ @ ${sig.touch_time} · trend continuation`,
+  SQZ:   (sig) => `Squeeze breakout above +1σ @ ${sig.entry_time}`,
+  FLAG:     (sig) => `Bull flag breakout @ ${sig.entry_time}${sig.pole_pct ? ` · pole ${sig.pole_pct}%` : ''}`,
+  TRI:      (sig) => `Ascending triangle breakout @ ${sig.entry_time}${sig.touches ? ` · ${sig.touches} touches` : ''}`,
+  DTRI:     (sig) => `Descending triangle breakout @ ${sig.entry_time}${sig.touches ? ` · ${sig.touches} touches` : ''}`,
+  VCNB:     (sig) => `VWAP consolidation breakout @ ${sig.entry_time}${sig.consol_pct ? ` · base ${sig.consol_pct}%` : ''}`,
+  OPEN_RCL: (sig) => `Weak open → VWAP reclaim @ ${sig.entry_time} · dip ${sig.dip_pct}%`,
+};
+
+// Pattern-specific label + sub for the 4th trade card
+const TOUCH_LABEL = {
+  B:     (sig) => `Dip Started @ ${sig.touch_time}`,
+  C:     (sig) => `Initial Break @ ${sig.touch_time}`,
+  ENG:   (sig) => `Red Candle @ ${sig.touch_time}`,
+  HAM:   (sig) => `Hammer @ ${sig.touch_time}`,
+  MAR:   (sig) => `Pre-Candle @ ${sig.touch_time}`,
+  STAR:  (sig) => `Red Candle @ ${sig.touch_time}`,
+  HAM2S: (sig) => `−2σ Band @ ${sig.touch_time}`,
+  BW:    (sig) => `+1σ Touch @ ${sig.touch_time}`,
+  SQZ:   (sig) => `Squeeze Break @ ${sig.entry_time}`,
+  FLAG:     (sig) => `Flag High ₹${sig.touch_high}`,
+  TRI:      (sig) => `Resistance ₹${sig.touch_high}`,
+  DTRI:     (sig) => `Support ₹${sig.touch_low}`,
+  VCNB:     (sig) => `VWAP @ ${sig.touch_time}`,
+  OPEN_RCL: (sig) => `Open Low ₹${sig.touch_low}`,
+};
+const TOUCH_SUB = {
+  B:     (sig) => `L ₹${sig.touch_low} ≤ VWAP ✓`,
+  C:     (sig) => `Retest zone ±₹${sig.atr || '—'}`,
+  ENG:   (sig) => `L ₹${sig.touch_low} ≤ VWAP ✓`,
+  HAM:   (sig) => `Wick ₹${sig.touch_low} ≤ VWAP ✓`,
+  MAR:   (sig) => `Prev candle below VWAP ✓`,
+  STAR:  (sig) => `Closed near VWAP ✓`,
+  HAM2S: (sig) => `Wick ₹${sig.touch_low} ≤ −2σ ✓`,
+  BW:    (sig) => `Band ₹${sig.touch_vwap} held ✓`,
+  SQZ:   (sig) => `Close above +1σ ✓`,
+  FLAG:     (sig) => `Breakout above flag ✓`,
+  TRI:      (sig) => `Breakout above resistance ✓`,
+  DTRI:     (sig) => `Breakout above descending line ✓`,
+  VCNB:     (sig) => `Close > VWAP + 5-bar high ✓`,
+  OPEN_RCL: (sig) => `Reclaim above VWAP ✓`,
 };
 
 function PatternBadge({ pattern }) {
@@ -24,12 +88,7 @@ function PatternBadge({ pattern }) {
   );
 }
 
-function patternDesc(sig) {
-  const m = PATTERN_META[sig?.pattern];
-  return m ? m.desc : 'VWAP touch';
-}
-
-// ── Confidence ring SVG ───────────────────────────────────────────────────────
+// ── Confidence ring ───────────────────────────────────────────────────────────
 function ConfRing({ conf }) {
   const R   = 24;
   const C   = 2 * Math.PI * R;
@@ -83,12 +142,79 @@ function TradeCell({ label, price, sub, colorClass }) {
 }
 
 // ── Live price section ────────────────────────────────────────────────────────
-function LiveSection({ sig, ltp, marketOpen }) {
+function LiveSection({ sig, ltp, marketOpen, sim }) {
+  const fmtI = (n) => Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+  const fmt2 = (n) => Number(Math.abs(n)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   if (!marketOpen) {
     const shares   = sig.entry > 0 ? Math.floor(TRADE_CAPITAL / sig.entry) : 0;
-    const invested = (shares * sig.entry).toLocaleString('en-IN', { maximumFractionDigits: 0 });
-    const maxLoss  = (shares * sig.risk).toLocaleString('en-IN', { maximumFractionDigits: 0 });
-    const maxGain  = (shares * sig.reward).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+    const maxLoss  = fmtI(shares * sig.risk);
+    const maxGain  = fmtI(shares * sig.reward);
+
+    // ── Test mode: sim data available — show actual outcome ──────────────────
+    if (sim) {
+      const { outcome, exit_price, pnl, pnl_pct } = sim;
+      const simShares = sim.shares ?? shares;
+      const pnlUp     = pnl >= 0;
+
+      const OUTCOME = {
+        TARGET_HIT: { text: '🎯 TARGET HIT', color: 'var(--green)', bg: 'var(--green-10)', border: 'rgba(0,255,159,0.25)' },
+        SL_HIT:     { text: '🛑 SL HIT',     color: 'var(--red)',   bg: 'var(--red-10)',   border: 'rgba(255,59,92,0.25)'  },
+        IN_TRADE:   { text: '📈 IN TRADE',   color: 'var(--blue)',  bg: 'var(--blue-10)',  border: 'rgba(77,159,255,0.25)' },
+      };
+      const o = OUTCOME[outcome] || OUTCOME.IN_TRADE;
+
+      return (
+        <div className="live-section">
+          <div className="live-row">
+            <div>
+              <div className="live-label">Exit Price</div>
+              <div className="live-price-val" style={{ color: 'var(--text2)', fontSize: '1.3rem' }}>
+                ₹{exit_price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+            <div className="trade-status">
+              <div className="live-label" style={{ textAlign: 'right' }}>Outcome</div>
+              <div className="status-badge-pill" style={{
+                background: o.bg, border: `1px solid ${o.border}`,
+                color: o.color, marginTop: '0.3rem',
+              }}>
+                {o.text}
+              </div>
+            </div>
+          </div>
+
+          <div className="pnl-grid">
+            <div className="pnl-cell">
+              <div className="pnl-label">Shares (₹2L)</div>
+              <div className="pnl-val">{simShares}</div>
+              <div className="pnl-sub">₹{fmtI(simShares * sig.entry)}</div>
+            </div>
+            <div className="pnl-cell">
+              <div className="pnl-label">Actual P&amp;L</div>
+              <div className="pnl-val" style={{ color: pnlUp ? 'var(--green)' : 'var(--red)', fontSize: '1.1rem' }}>
+                {pnlUp ? '+' : '−'}₹{fmtI(pnl)}
+              </div>
+              <div className="pnl-sub" style={{ color: pnlUp ? 'var(--green)' : 'var(--red)' }}>
+                {pnl_pct >= 0 ? '+' : ''}{fmt2(pnl_pct)}%
+              </div>
+            </div>
+            <div className="pnl-cell">
+              <div className="pnl-label">Max Loss</div>
+              <div className="pnl-val red">-₹{maxLoss}</div>
+              <div className="pnl-sub">if SL hit</div>
+            </div>
+            <div className="pnl-cell">
+              <div className="pnl-label">Max Gain</div>
+              <div className="pnl-val green">+₹{maxGain}</div>
+              <div className="pnl-sub">if target</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Production mode: no sim — show projected values only ─────────────────
     return (
       <div className="live-section">
         <div style={{ fontSize: '0.62rem', color: 'var(--dim)', fontFamily: 'var(--mono)', marginBottom: '0.6rem' }}>
@@ -98,7 +224,7 @@ function LiveSection({ sig, ltp, marketOpen }) {
           <div className="pnl-cell">
             <div className="pnl-label">Shares (₹2L)</div>
             <div className="pnl-val">{shares}</div>
-            <div className="pnl-sub">₹{invested}</div>
+            <div className="pnl-sub">₹{fmtI(shares * sig.entry)}</div>
           </div>
           <div className="pnl-cell">
             <div className="pnl-label">Max Loss</div>
@@ -155,7 +281,6 @@ function LiveSection({ sig, ltp, marketOpen }) {
   const statusColor  = isTarget ? 'var(--green)' : isSL ? 'var(--red)' : 'var(--blue)';
 
   const fmt = (n, dec = 2) => Math.abs(n).toLocaleString('en-IN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-  const fmtI = (n) => Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 
   return (
     <div className="live-section">
@@ -255,7 +380,7 @@ export default function SignalCard({ result, ltp, marketOpen, isLate }) {
             )}
           </div>
           <div className="signal-meta">
-            {patternDesc(sig)} @ {sig.touch_time} → entry @ {sig.entry_time}
+            {(SIGNAL_META[sig.pattern] || ((s) => `Signal @ ${s.touch_time} → entry @ ${s.entry_time}`))(sig)}
             &nbsp;·&nbsp;MCap ₹{result.mcap.toLocaleString('en-IN')} Cr
             &nbsp;·&nbsp;ST-VWAP {result.st_vwap_gap_pct}%
             &nbsp;·&nbsp;VWAP-PP {result.vwap_pp_gap_pct}%
@@ -287,15 +412,15 @@ export default function SignalCard({ result, ltp, marketOpen, isLate }) {
           colorClass="gold"
         />
         <TradeCell
-          label={`VWAP Touch @ ${sig.touch_time}`}
+          label={(TOUCH_LABEL[sig.pattern] || ((s) => `Ref @ ${s.touch_time}`))(sig)}
           price={sig.touch_vwap}
-          sub={`L ₹${sig.touch_low} ≤ VWAP ✓`}
+          sub={(TOUCH_SUB[sig.pattern] || ((s) => `L ₹${s.touch_low}`))(sig)}
           colorClass="blue"
         />
       </div>
 
       {/* Live section */}
-      <LiveSection sig={sig} ltp={ltp} marketOpen={marketOpen} />
+      <LiveSection sig={sig} ltp={ltp} marketOpen={marketOpen} sim={result.sim} />
 
       {/* Live chart */}
       {ikey && (

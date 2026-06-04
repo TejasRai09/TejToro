@@ -3,6 +3,7 @@ import FilterPanel from './components/FilterPanel.jsx';
 import SignalCard from './components/SignalCard.jsx';
 import SummaryTable from './components/SummaryTable.jsx';
 import TestTable from './components/TestTable.jsx';
+import BacktestLab from './pages/BacktestLab.jsx';
 
 // ── TejToro Bull Logo ─────────────────────────────────────────────────────────
 function TejToroLogo({ size = 32 }) {
@@ -173,8 +174,36 @@ function NoResults() {
   );
 }
 
+// ── Tab Nav ───────────────────────────────────────────────────────────────────
+function TabNav({ tab, setTab }) {
+  return (
+    <div style={{
+      background: 'var(--surface)', borderBottom: '1px solid var(--border)',
+      display: 'flex', padding: '0 1.5rem', gap: 0,
+    }}>
+      {[['scanner', 'Scanner'], ['backtest', 'Backtest Lab']].map(([id, label]) => (
+        <button
+          key={id}
+          onClick={() => setTab(id)}
+          style={{
+            padding: '0.6rem 1.1rem', border: 'none',
+            borderBottom: tab === id ? '2px solid var(--green)' : '2px solid transparent',
+            background: 'transparent', cursor: 'pointer',
+            color: tab === id ? 'var(--green)' : 'var(--muted)',
+            fontFamily: 'var(--font)', fontWeight: tab === id ? 600 : 400,
+            fontSize: '0.82rem', transition: 'all 0.12s',
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
+  const [tab,            setTab]            = useState('scanner');
   const [results,        setResults]        = useState([]);
   const [scanTime,       setScanTime]       = useState(null);
   const [scanning,       setScanning]       = useState(false);
@@ -203,17 +232,21 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
-  // ── Re-fetch results every 60 s to pick up server-side signal re-checks ──
+  // ── Re-fetch results every 30 s — picks up auto-scan updates even if page
+  //    loaded before the first scan completed (scanTime may be null then)
   useEffect(() => {
-    if (!scanTime || scanning) return;
+    if (scanning) return;
     const id = setInterval(() => {
       fetch('/api/results')
         .then(r => r.json())
-        .then(rd => { if (rd.results) setResults(rd.results); })
+        .then(rd => {
+          if (rd.results) setResults(rd.results);
+          if (rd.scan_time) setScanTime(rd.scan_time);
+        })
         .catch(() => {});
-    }, 60000);
+    }, 30000);
     return () => clearInterval(id);
-  }, [scanTime, scanning]);
+  }, [scanning]);
 
   // ── Live prices — poll every 5 s ─────────────────────────────────────────
   useEffect(() => {
@@ -307,9 +340,13 @@ export default function App() {
         onToggleFilter={() => setFilterOpen(f => !f)}
       />
 
-      {filterOpen && <FilterPanel />}
+      <TabNav tab={tab} setTab={setTab} />
 
-      <div className="main-content">
+      {tab === 'backtest' && <BacktestLab />}
+
+      {tab === 'scanner' && filterOpen && <FilterPanel />}
+
+      {tab === 'scanner' && <div className="main-content">
         {scanning && (
           <ScanProgress done={scanProgress.done} total={scanProgress.total} />
         )}
@@ -411,7 +448,7 @@ export default function App() {
         {testMode && fired.length > 0 && (
           <div className="page-section">
             <SectionHead title={`Backtest Results — ${fired.length} signals today`} color="purple" />
-            <TestTable results={results} />
+            <TestTable results={results} prices={live.prices} />
           </div>
         )}
 
@@ -426,7 +463,7 @@ export default function App() {
             />
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

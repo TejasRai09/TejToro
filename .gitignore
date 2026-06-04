@@ -15,6 +15,7 @@ dist/
 build/
 
 # Data & backtest output
+data/
 backtest_30d/
 backtest_data/
 backtest_results/
@@ -22,6 +23,7 @@ nifty500_data/
 scratch/
 logs/
 *.csv
+*.parquet
 
 # Frontend
 frontend/node_modules/
